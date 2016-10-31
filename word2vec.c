@@ -390,7 +390,7 @@ void DestroyNet() {
     free(syn1neg);
   }
 }
-
+// 训练线程----//这个线程函数执行之前，已经做好了一些工作：根据词频排序的词汇表，每个单词的huffman编码  
 void *TrainModelThread(void *id) {
   long long a, b, d, word, last_word, sentence_length = 0, sentence_position = 0;
   long long word_count = 0, last_word_count = 0, sen[MAX_SENTENCE_LENGTH + 1];
@@ -405,22 +405,22 @@ void *TrainModelThread(void *id) {
     fprintf(stderr, "no such file or directory: %s", train_file);
     exit(1);
   }
-  fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
-  while (1) {
-    if (word_count - last_word_count > 10000) {
+  fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);// 将文件内容平均分配给各个线程,每个线程读取文件的开始位置不同
+  while (1) {//开始读取句子，训练模型
+    if (word_count - last_word_count > 10000) {	// 每处理玩10000个词调整学习率
       word_count_actual += word_count - last_word_count;
       last_word_count = word_count;
       if ((debug_mode > 1)) {
         now=clock();
         printf("%cAlpha: %f  Progress: %.2f%%  Words/thread/sec: %.2fk  ", 13, alpha,
-         word_count_actual / (real)(train_words + 1) * 100,
-         word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
+         word_count_actual / (real)(train_words + 1) * 100,// 计算训练进度
+         word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));// 计算训练速度
         fflush(stdout);
       }
       alpha = starting_alpha * (1 - word_count_actual / (real)(train_words + 1));
-      if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
+      if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;// 学习率过小则固定一个值
     }
-    if (sentence_length == 0) {
+    if (sentence_length == 0) {//读取一个句子
       while (1) {
         word = ReadWordIndex(fi);
         if (feof(fi)) break;
@@ -428,25 +428,25 @@ void *TrainModelThread(void *id) {
         word_count++;
         if (word == 0) break;
         // The subsampling randomly discards frequent words while keeping the ranking same
-        if (sample > 0) {
+        if (sample > 0) {//过滤高频词
           real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
           next_random = next_random * (unsigned long long)25214903917 + 11;
           if (ran < (next_random & 0xFFFF) / (real)65536) continue;
         }
-        sen[sentence_length] = word;
+        sen[sentence_length] = word;// 将该词存入句子,存放的是该词在词典中的索引
         sentence_length++;
-        if (sentence_length >= MAX_SENTENCE_LENGTH) break;
+        if (sentence_length >= MAX_SENTENCE_LENGTH) break;// 句子过长,舍弃后面的.
       }
-      sentence_position = 0;
+      sentence_position = 0;//当前单词在当前句子中的索引
     }
     if (feof(fi)) break;
-    if (word_count > train_words / num_threads) break;
-    word = sen[sentence_position];
-    if (word == -1) continue;
-    for (c = 0; c < layer1_size; c++) neu1[c] = 0;
-    for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+    if (word_count > train_words / num_threads) break; // 文件结束,或者该线程工作已经完成
+    word = sen[sentence_position]; // 取句子中的一个单词，开始训练
+    if (word == -1) continue;//TODO 怎么还会不存在?? 该词不存在，取 下个词，好像如果存在的话会 会出现死 循环吧
+    for (c = 0; c < layer1_size; c++) neu1[c] = 0;//Xw
+    for (c = 0; c < layer1_size; c++) neu1e[c] = 0;//e 隐藏层参数
     next_random = next_random * (unsigned long long)25214903917 + 11;
-    b = next_random % window;
+    b = next_random % window;// b是个随机数，0到window-1，指定了本次算法操作实际的窗口大小 window-b
     if (cbow) {  //train the cbow architecture
       // in -> hidden
       for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
@@ -454,53 +454,53 @@ void *TrainModelThread(void *id) {
         if (c < 0) continue;
         if (c >= sentence_length) continue;
         last_word = sen[c];
-        if (last_word == -1) continue;
-        for (c = 0; c < layer1_size; c++) neu1[c] += syn0[c + last_word * layer1_size];
+        if (last_word == -1) continue;//没有这个词
+        for (c = 0; c < layer1_size; c++) neu1[c] += syn0[c + last_word * layer1_size];// 累加到neu1----Xw
       }
-      if (hs) for (d = 0; d < vocab[word].codelen; d++) {
-        f = 0;
-        l2 = vocab[word].point[d] * layer1_size;
+      if (hs) for (d = 0; d < vocab[word].codelen; d++) {//hs模型
+        f = 0;//f对应q neu1对应Xw，syn1对应0j-1w
+        l2 = vocab[word].point[d] * layer1_size;//路径上的点，syn1的偏置值
         // Propagate hidden -> output
-        for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1[c + l2];
+        for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1[c + l2];//计算q
         if (f <= -MAX_EXP) continue;
-        else if (f >= MAX_EXP) continue;
+        else if (f >= MAX_EXP) continue;//不在expTable内的舍弃掉,TODO 或者改为改成太小的都是0，太大的都是1
         else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
         // 'g' is the gradient multiplied by the learning rate
         g = (1 - vocab[word].code[d] - f) * alpha;
         // Propagate errors output -> hidden
         for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
         // Learn weights hidden -> output
-        for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c];
+        for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * neu1[c]; //neu1对应Xw，syn1对应0j-1w
       }
       // NEGATIVE SAMPLING
-      if (negative > 0) for (d = 0; d < negative + 1; d++) {
-        if (d == 0) {
+      if (negative > 0) for (d = 0; d < negative + 1; d++) {// negative表示是否使用NEG方法,指定负采样数量, 默认值5
+        if (d == 0) { //设置当前词为一个正样本,类别为1
           target = word;
           label = 1;
-        } else {
+        } else {// 进行一次负采样，采样使得target与Word不同， 相同continue，也即最多采样 negative个 负样本
           next_random = next_random * (unsigned long long)25214903917 + 11;
           target = table[(next_random >> 16) % table_size];
           if (target == 0) target = next_random % (vocab_size - 1) + 1;
           if (target == word) continue;
           label = 0;
         }
-        l2 = target * layer1_size;
-        f = 0;
+        l2 = target * layer1_size;// target在syn1neg中第一维的偏移量
+        f = 0;//f对应q neu1对应Xw，syn1neg对应0u
         for (c = 0; c < layer1_size; c++) f += neu1[c] * syn1neg[c + l2];
         if (f > MAX_EXP) g = (label - 1) * alpha;
-        else if (f < -MAX_EXP) g = (label - 0) * alpha;
+        else if (f < -MAX_EXP) g = (label - 0) * alpha;//这里f直接是1或0
         else g = (label - expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))]) * alpha;
-        for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];
+        for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1neg[c + l2];//neu1e 对应e syn1neg对应0u
         for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * neu1[c];
       }
       // hidden -> in
-      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {//更新窗口内每个词的词向量
         c = sentence_position - window + a;
         if (c < 0) continue;
         if (c >= sentence_length) continue;
         last_word = sen[c];
         if (last_word == -1) continue;
-        for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];
+        for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];//syn0对应于V（w）
       }
     } else {  //train skip-gram
       for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
