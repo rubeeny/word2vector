@@ -406,8 +406,8 @@ void *TrainModelThread(void *id) {
     exit(1);
   }
   fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);// 将文件内容平均分配给各个线程,每个线程读取文件的开始位置不同
-  while (1) {//开始读取句子，训练模型
-    if (word_count - last_word_count > 10000) {	// 每处理玩10000个词调整学习率
+  while (1) {//开始读入一个句子，训练模型
+    if (word_count - last_word_count > 10000) {	// 每处理完10000个词调整学习率
       word_count_actual += word_count - last_word_count;
       last_word_count = word_count;
       if ((debug_mode > 1)) {
@@ -417,7 +417,7 @@ void *TrainModelThread(void *id) {
          word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));// 计算训练速度
         fflush(stdout);
       }
-      alpha = starting_alpha * (1 - word_count_actual / (real)(train_words + 1));
+      alpha = starting_alpha * (1 - word_count_actual / (real)(train_words + 1));//学习率会逐渐变小，可以理解为接近最优解时，每次探测的距离不能太大
       if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;// 学习率过小则固定一个值
     }
     if (sentence_length == 0) {//读取一个句子
@@ -441,7 +441,7 @@ void *TrainModelThread(void *id) {
     }
     if (feof(fi)) break;
     if (word_count > train_words / num_threads) break; // 文件结束,或者该线程工作已经完成
-    word = sen[sentence_position]; // 取句子中的一个单词，开始训练
+    word = sen[sentence_position]; // 取句子中的一个单词，开始训练,sen存放的是词在词典中的索引
     if (word == -1) continue;//TODO 怎么还会不存在?? 该词不存在，取 下个词，好像如果存在的话会 会出现死 循环吧
     for (c = 0; c < layer1_size; c++) neu1[c] = 0;//Xw
     for (c = 0; c < layer1_size; c++) neu1e[c] = 0;//e 隐藏层参数
@@ -449,7 +449,7 @@ void *TrainModelThread(void *id) {
     b = next_random % window;// b是个随机数，0到window-1，指定了本次算法操作实际的窗口大小 window-b
     if (cbow) {  //train the cbow architecture
       // in -> hidden
-      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {// 计算Xw
         c = sentence_position - window + a;
         if (c < 0) continue;
         if (c >= sentence_length) continue;
@@ -465,7 +465,7 @@ void *TrainModelThread(void *id) {
         if (f <= -MAX_EXP) continue;
         else if (f >= MAX_EXP) continue;//不在expTable内的舍弃掉,TODO 或者改为改成太小的都是0，太大的都是1
         else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
-        // 'g' is the gradient multiplied by the learning rate
+        // 'g' is the gradient multiplied by the learning rate           // g是梯度与学习率的乘积,辅助量
         g = (1 - vocab[word].code[d] - f) * alpha;
         // Propagate errors output -> hidden
         for (c = 0; c < layer1_size; c++) neu1e[c] += g * syn1[c + l2];
@@ -503,20 +503,20 @@ void *TrainModelThread(void *id) {
         for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];//syn0对应于V（w）
       }
     } else {  //train skip-gram
-      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
+      for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {//预测非中心词（邻域内的词u）
         c = sentence_position - window + a;
         if (c < 0) continue;
         if (c >= sentence_length) continue;
         last_word = sen[c];
         if (last_word == -1) continue;
         l1 = last_word * layer1_size;
-        for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+        for (c = 0; c < layer1_size; c++) neu1e[c] = 0;//对应于e
         // HIERARCHICAL SOFTMAX
         if (hs) for (d = 0; d < vocab[word].codelen; d++) {
-          f = 0;
+          f = 0;////f对应q ，syn1对应0uj-1
           l2 = vocab[word].point[d] * layer1_size;
           // Propagate hidden -> output
-          for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1[c + l2];
+          for (c = 0; c < layer1_size; c++) f += syn0[c + l1] * syn1[c + l2];//syn0对应于V（w）,当前词的词向量，syn1对应0uj-1
           if (f <= -MAX_EXP) continue;
           else if (f >= MAX_EXP) continue;
           else f = expTable[(int)((f + MAX_EXP) * (EXP_TABLE_SIZE / MAX_EXP / 2))];
@@ -549,11 +549,11 @@ void *TrainModelThread(void *id) {
           for (c = 0; c < layer1_size; c++) syn1neg[c + l2] += g * syn0[c + l1];
         }
         // Learn weights input -> hidden
-        for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];
+        for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];//更新词w的词向量V(w)
       }
     }
-    sentence_position++;
-    if (sentence_position >= sentence_length) {
+    sentence_position++;//指向当前句中的下 一词
+    if (sentence_position >= sentence_length) {//处理完一句
       sentence_length = 0;
       continue;
     }
